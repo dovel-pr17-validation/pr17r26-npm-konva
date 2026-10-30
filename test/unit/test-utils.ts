@@ -1,0 +1,466 @@
+import { assert } from 'chai';
+import KonvaModule from '../../src/index.ts';
+
+export const Konva = KonvaModule;
+
+Konva.enableTrace = true;
+Konva.showWarnings = true;
+
+import { imagediff } from './imagediff.ts';
+import type { Layer } from '../../src/Layer.ts';
+import type { Stage } from '../../src/Stage.ts';
+
+export const isNode = typeof global.document === 'undefined';
+export const isBrowser = !isNode;
+
+export function getContainer() {
+  return document.getElementById('konva-container')!;
+}
+
+export function addContainer() {
+  if (isNode) {
+    return;
+  }
+  var container = document.createElement('div');
+
+  getContainer().appendChild(container);
+  return container;
+}
+
+export function addStage(attrs?) {
+  var container =
+    (!isNode && global.document.createElement('div')) || undefined;
+
+  var stage = new Konva.Stage({
+    container: container,
+    width: 578,
+    height: 200,
+    ...attrs,
+  });
+
+  if (!isNode) {
+    getContainer().appendChild(container!);
+  }
+
+  return stage;
+}
+
+export function loadImage(url, callback) {
+  const isBase64 = url.indexOf('base64') >= 0;
+  if (isNode && !isBase64) {
+    url = './test/assets/' + url;
+  } else if (!isBase64) {
+    url = (document.getElementById(url) as HTMLImageElement).src;
+  }
+
+  const image = Konva.Util.createImageElement();
+  image.onload = () => {
+    callback(image);
+  };
+  image.onerror = (e) => {
+    console.error('Error loading image', url, e);
+  };
+  image.src = url;
+}
+
+export function getPixelRatio() {
+  return (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+}
+
+function get(element, content?) {
+  element = document.createElement(element);
+  if (element && content) {
+    element.innerHTML = content;
+  }
+  return element;
+}
+
+export function compareCanvases(canvas1, canvas2, tol = 1, secondTol?) {
+  var equal = imagediff.equal(canvas1, canvas2, tol, secondTol);
+  if (!equal) {
+    const diff = imagediff.diff(canvas1, canvas2);
+    const { canvas: diffCanvas, context } = createCanvasAndContext();
+    context.putImageData(diff, 0, 0);
+
+    var base64 = diffCanvas.toDataURL();
+    console.error('Diff image:');
+    console.error(base64);
+
+    if (isBrowser) {
+      var div = get('div'),
+        b = get('div', '<div>Expected:</div>'),
+        c = get('div', '<div>Diff:</div>');
+      div.style.overflow = 'hidden';
+      b.style.float = 'left';
+      c.style.float = 'left';
+      canvas2.style.position = '';
+      canvas2.style.display = '';
+      b.appendChild(canvas2);
+      c.appendChild(diffCanvas);
+      div.appendChild(b);
+      if (!canvas1.parentNode) {
+        const d = get('div', '<div>Original:</div>');
+        canvas1.style.position = '';
+        canvas1.style.display = '';
+        d.style.float = 'left';
+        d.appendChild(canvas1);
+        div.appendChild(d);
+      }
+      div.appendChild(c);
+      getContainer().appendChild(div);
+    }
+  }
+  assert.equal(
+    equal,
+    true,
+    'Result from Konva is different with canvas result'
+  );
+}
+
+// the distinct colors of fully opaque pixels, as 'r,g,b', in pixel order
+export function opaqueColors(layer: Layer) {
+  const canvas = layer.getCanvas()._canvas;
+  const pixels = layer
+    .getContext()
+    .getImageData(0, 0, canvas.width, canvas.height).data;
+  const colors = new Set<string>();
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i + 3] === 255)
+      colors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
+  }
+  return Array.from(colors);
+}
+
+export function compareLayerAndCanvas(layer: Layer, canvas, tol?, secondTol?) {
+  compareCanvases(layer.getNativeCanvasElement(), canvas, tol, secondTol);
+}
+
+export function cloneAndCompareLayer(layer: Layer, tol?, secondTol?) {
+  var layer2 = layer.clone();
+  layer.getStage().add(layer2);
+  layer2.hide();
+  compareLayers(layer, layer2, tol, secondTol);
+}
+
+export function compareLayers(layer1: Layer, layer2: Layer, tol?, secondTol?) {
+  compareLayerAndCanvas(
+    layer1,
+    layer2.getNativeCanvasElement(),
+    tol,
+    secondTol
+  );
+}
+
+// records the bitmap size of every canvas allocation made while fn runs
+export function collectCanvasAllocations(fn: () => void) {
+  const allocations: Array<{ canvas: any; width: number; height: number }> = [];
+  const originalSetSize = Konva.Canvas.prototype.setSize;
+  Konva.Canvas.prototype.setSize = function (width, height) {
+    originalSetSize.call(this, width, height);
+    allocations.push({ canvas: this, width: this.width, height: this.height });
+  };
+  try {
+    fn();
+  } finally {
+    Konva.Canvas.prototype.setSize = originalSetSize;
+  }
+  return allocations.filter(({ width }) => width > 0);
+}
+
+// runs fn and returns how many times obj[method] was called meanwhile
+export function countCalls(obj: any, method: string, fn: () => void) {
+  const original = obj[method];
+  let count = 0;
+  obj[method] = function (...args) {
+    count++;
+    return original.apply(this, args);
+  };
+  try {
+    fn();
+  } finally {
+    obj[method] = original;
+  }
+  return count;
+}
+
+export function createCanvasAndContext() {
+  const canvas = Konva.Util.createCanvasElement();
+  canvas.width = 578 * Konva.pixelRatio;
+  canvas.height = 200 * Konva.pixelRatio;
+  const context = canvas.getContext('2d')!;
+  context.scale(Konva.pixelRatio, Konva.pixelRatio);
+  return { canvas, context };
+}
+
+export function showHit(layer) {
+  if (isNode) {
+    return;
+  }
+  var canvas = layer.hitCanvas._canvas;
+  canvas.style.position = 'relative';
+
+  getContainer().appendChild(canvas);
+}
+
+export function simulateMouseDown(
+  stage: Stage,
+  pos: { x: number; y: number; button?: number }
+) {
+  simulatePointerDown(stage, pos);
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+
+  stage._pointerdown({
+    clientX: pos.x,
+    clientY: pos.y + top,
+    button: pos.button || 0,
+    type: 'mousedown',
+  } as any);
+}
+
+export function simulateMouseMove(
+  stage: Stage,
+  pos: { x: number; y: number; button?: number }
+) {
+  simulatePointerMove(stage, pos);
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  var evt = {
+    clientX: pos.x,
+    clientY: pos.y + top,
+    button: pos.button || 0,
+    type: 'mousemove',
+  };
+
+  Konva.DD._drag(evt);
+  stage._pointermove(evt as any);
+}
+
+export function simulateMouseUp(stage, pos) {
+  simulatePointerUp(stage, pos);
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  var evt = {
+    clientX: pos.x,
+    clientY: pos.y + top,
+    button: pos.button || 0,
+    type: 'mouseup',
+  };
+
+  Konva.DD._endDragBefore(evt);
+  stage._pointerup(evt);
+  Konva.DD._endDragAfter(evt);
+}
+
+export function simulateTouchStart(stage, pos, changed?) {
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  var touches;
+  var changedTouches;
+  if (Array.isArray(pos)) {
+    touches = pos.map(function (touch) {
+      return {
+        identifier: touch.id,
+        clientX: touch.x,
+        clientY: touch.y + top,
+      };
+    });
+    changedTouches = (changed || pos).map(function (touch) {
+      return {
+        identifier: touch.id,
+        clientX: touch.x,
+        clientY: touch.y + top,
+      };
+    });
+  } else {
+    changedTouches = touches = [
+      {
+        clientX: pos.x,
+        clientY: pos.y + top,
+        identifier: 0,
+      },
+    ];
+  }
+  var evt = {
+    touches: touches,
+    changedTouches: changedTouches,
+    type: 'touchstart',
+  };
+
+  stage._pointerdown(evt);
+}
+
+export function simulateTouchMove(stage, pos, changed?) {
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  var touches;
+  var changedTouches;
+  if (Array.isArray(pos)) {
+    touches = pos.map(function (touch) {
+      return {
+        identifier: touch.id,
+        clientX: touch.x,
+        clientY: touch.y + top,
+      };
+    });
+    changedTouches = (changed || pos).map(function (touch) {
+      return {
+        identifier: touch.id,
+        clientX: touch.x,
+        clientY: touch.y + top,
+      };
+    });
+  } else {
+    changedTouches = touches = [
+      {
+        clientX: pos.x,
+        clientY: pos.y + top,
+        identifier: 0,
+      },
+    ];
+  }
+  var evt = {
+    touches: touches,
+    changedTouches: changedTouches,
+    type: 'touchmove',
+  };
+
+  stage._pointermove(evt);
+  Konva.DD._drag(evt);
+}
+
+export function simulateTouchEnd(stage, pos, changed?) {
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  var touches;
+  var changedTouches;
+  if (Array.isArray(pos)) {
+    touches = pos.map(function (touch) {
+      return {
+        identifier: touch.id,
+        clientX: touch.x,
+        clientY: touch.y + top,
+      };
+    });
+    changedTouches = (changed || pos).map(function (touch) {
+      return {
+        identifier: touch.id,
+        clientX: touch.x,
+        clientY: touch.y + top,
+      };
+    });
+  } else {
+    changedTouches = touches = [
+      {
+        clientX: pos.x,
+        clientY: pos.y + top,
+        identifier: 0,
+      },
+    ];
+  }
+  var evt = {
+    touches: touches,
+    changedTouches: changedTouches,
+    type: 'touchend',
+  };
+
+  Konva.DD._endDragBefore(evt);
+  stage._pointerup(evt);
+  Konva.DD._endDragAfter(evt);
+}
+
+type SimulatedPointerEvent = {
+  x: number;
+  y: number;
+  button?: number;
+  pointerId?: number;
+  pointerType?: string;
+};
+export function simulatePointerDown(stage: Stage, pos: SimulatedPointerEvent) {
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  stage._pointerdown({
+    clientX: pos.x,
+    clientY: pos.y + top,
+    button: pos.button || 0,
+    pointerId: pos.pointerId ?? 1,
+    pointerType: pos.pointerType ?? 'mouse',
+    type: 'pointerdown',
+  } as any);
+}
+
+export function simulatePointerMove(stage: Stage, pos: SimulatedPointerEvent) {
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  var evt = {
+    clientX: pos.x,
+    clientY: pos.y + top,
+    button: pos.button || 0,
+    pointerId: pos.pointerId ?? 1,
+    pointerType: pos.pointerType ?? 'mouse',
+    type: 'pointermove',
+  };
+
+  stage._pointermove(evt as any);
+  // Konva.DD._drag(evt);
+}
+
+export function simulatePointerUp(stage: Stage, pos: SimulatedPointerEvent) {
+  var top = isNode ? 0 : stage.content.getBoundingClientRect().top;
+  var evt = {
+    clientX: pos.x,
+    clientY: pos.y + top,
+    button: pos.button || 0,
+    pointerId: pos.pointerId ?? 1,
+    pointerType: pos.pointerType ?? 'mouse',
+    type: 'pointerup',
+  };
+
+  // Konva.DD._endDragBefore(evt);
+  stage._pointerup(evt as any);
+  // Konva.DD._endDragAfter(evt);
+}
+
+function isClose(a, b, tol = 0.000001) {
+  return Math.abs(a - b) < tol;
+}
+
+export const assertAlmostEqual = function (val1, val2, tol = 0.000001) {
+  if (!isClose(val1, val2, tol)) {
+    throw new Error('Expected ' + val1 + ' to be almost equal to ' + val2);
+  }
+};
+
+export const assertAlmostDeepEqual = function (obj1, obj2, tol?) {
+  for (var key1 in obj1) {
+    assertAlmostEqual(obj1[key1], obj2[key1], tol);
+  }
+};
+
+// Tight surfaces can change native edge coverage. Compare premultiplied colors
+// so RGB rounding in nearly transparent pixels does not hide the actual error.
+// Allow 4/255 of rounding noise and a small total edge error, capped per pixel.
+export function compareCanvasEdges(
+  actual: HTMLCanvasElement,
+  expected: HTMLCanvasElement
+) {
+  assert.equal(actual.width, expected.width);
+  assert.equal(actual.height, expected.height);
+  const a = actual
+    .getContext('2d')!
+    .getImageData(0, 0, actual.width, actual.height).data;
+  const b = expected
+    .getContext('2d')!
+    .getImageData(0, 0, expected.width, expected.height).data;
+  let totalError = 0;
+  let max = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    let error = Math.abs(a[i + 3] - b[i + 3]);
+    for (let c = 0; c < 3; c++) {
+      error = Math.max(
+        error,
+        Math.abs(a[i + c] * a[i + 3] - b[i + c] * b[i + 3]) / 255
+      );
+    }
+    max = Math.max(max, error);
+    totalError += Math.max(0, error - 4);
+  }
+  assert.isAtMost(max, 64, 'maximum premultiplied pixel error');
+  assert.isAtMost(
+    totalError / (actual.width * actual.height),
+    0.25,
+    'average edge error'
+  );
+}
